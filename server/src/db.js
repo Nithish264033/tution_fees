@@ -18,14 +18,16 @@ const pool = connectionString
       ssl:
         pgSslMode === "disable"
           ? false
-          : { rejectUnauthorized: false }
+          : { rejectUnauthorized: false },
+      family: 4
     })
   : new Pool({
       host: readEnv("PGHOST") || "localhost",
       port: Number(readEnv("PGPORT") || 5432),
       database: readEnv("PGDATABASE") || "tuition_fees",
       user: readEnv("PGUSER") || "postgres",
-      password: pgPassword
+      password: pgPassword,
+      family: 4
     });
 
 async function query(text, params = []) {
