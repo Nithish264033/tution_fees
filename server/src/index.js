@@ -228,21 +228,33 @@ app.get("/api/students", asyncHandler(async (req, res) => {
   const normalizedSearch = String(search || "").trim();
   const selectedMonth = Number.parseInt(monthNumber, 10);
 
+  const conditions = [];
+  const params = [];
+
+  if (batchYear) {
+    params.push(batchYear);
+    conditions.push(`batch_year = $${params.length}`);
+  }
+
+  if (className) {
+    params.push(className);
+    conditions.push(`class_name = $${params.length}`);
+  }
+
+  if (normalizedSearch) {
+    params.push(`%${normalizedSearch}%`);
+    conditions.push(`LOWER(name) LIKE LOWER($${params.length})`);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
   const rows = await db
     .query(
-      `SELECT id, name, class_name, batch_year, join_date, created_at
-              , phone_number
+      `SELECT id, name, class_name, batch_year, join_date, created_at, phone_number
        FROM students
-       WHERE ($1::text = '' OR batch_year = $1)
-         AND ($2::text = '' OR class_name = $2)
-         AND ($3::text = '' OR LOWER(name) LIKE LOWER($4))
+       ${where}
        ORDER BY name ASC`,
-      [
-        batchYear || "",
-        className || "",
-        normalizedSearch,
-        `%${normalizedSearch}%`
-      ]
+      params
     )
     .then((result) => result.rows);
 
