@@ -46,8 +46,8 @@ function getAdminSettings() {
     .then((result) => result.rows[0] || null);
 }
 
-async function loadStudentFees(studentId, tuitionFee, client = db) {
-  return client
+async function loadStudentFees(studentId, tuitionFee) {
+  return db
     .query(
       `SELECT month_number AS "monthNumber", paid, paid_amount AS "paidAmount", paid_date AS "paidDate"
        FROM fee_records
@@ -58,14 +58,14 @@ async function loadStudentFees(studentId, tuitionFee, client = db) {
     .then((result) => result.rows.map((fee) => normalizeFeeRecord(fee, tuitionFee)));
 }
 
-async function hydrateStudent(row, client = db) {
+async function hydrateStudent(row) {
   if (!row) {
     return null;
   }
 
   const adminSettings = await getAdminSettings();
   const tuitionFee = parseAmount(adminSettings?.currentYearFee);
-  const fees = await loadStudentFees(row.id, tuitionFee, client);
+  const fees = await loadStudentFees(row.id, tuitionFee);
 
   const feeMap = new Map(fees.map((fee) => [fee.monthNumber, fee]));
 
@@ -335,7 +335,7 @@ app.post("/api/students", asyncHandler(async (req, res) => {
       );
     }
 
-    return hydrateStudent(insertResult.rows[0], client);
+    return hydrateStudent(insertResult.rows[0]);
   });
 
   return res.status(201).json(student);
