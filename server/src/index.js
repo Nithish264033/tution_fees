@@ -2,7 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
 const path = require("path");
-const db = require("./db");
+const { Student, FeeRecord, AdminSettings, getNextId, initDb } = require("./db");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -24,53 +24,42 @@ function parseAmount(value) {
 }
 
 function normalizeFeeRecord(fee, tuitionFee) {
-  const paidAmount = Math.min(parseAmount(fee.paidAmount), tuitionFee);
+  const paidAmount = Math.min(parseAmount(fee.paid_amount), tuitionFee);
   const remainingAmount = Number(Math.max(tuitionFee - paidAmount, 0).toFixed(2));
-
   return {
-    monthNumber: fee.monthNumber,
+    monthNumber: fee.month_number,
     paid: remainingAmount === 0,
     paidAmount,
     remainingAmount,
-    paidDate: paidAmount > 0 ? fee.paidDate || "" : ""
+    paidDate: paidAmount > 0 ? fee.paid_date || "" : ""
   };
 }
 
-function getAdminSettings() {
-  return db
-    .query(
-      `SELECT username, password_hash AS "passwordHash", current_year_fee AS "currentYearFee"
-       FROM admin_settings
-       WHERE id = 1`
-    )
-    .then((result) => result.rows[0] || null);
+async function getAdminSettings() {
+  const doc = await AdminSettings.findById(1).lean();
+  if (!doc) return null;
+  return {
+    username: doc.username,
+    passwordHash: doc.password_hash,
+    currentYearFee: doc.current_year_fee
+  };
 }
 
 async function loadStudentFees(studentId, tuitionFee) {
-  return db
-    .query(
-      `SELECT month_number AS "monthNumber", paid, paid_amount AS "paidAmount", paid_date AS "paidDate"
-       FROM fee_records
-       WHERE student_id = $1
-       ORDER BY month_number ASC`,
-      [studentId]
-    )
-    .then((result) => result.rows.map((fee) => normalizeFeeRecord(fee, tuitionFee)));
+  const fees = await FeeRecord.find({ student_id: studentId }).sort({ month_number: 1 }).lean();
+  return fees.map((fee) => normalizeFeeRecord(fee, tuitionFee));
 }
 
 async function hydrateStudent(row) {
-  if (!row) {
-    return null;
-  }
+  if (!row) return null;
 
   const adminSettings = await getAdminSettings();
   const tuitionFee = parseAmount(adminSettings?.currentYearFee);
-  const fees = await loadStudentFees(row.id, tuitionFee);
-
+  const fees = await loadStudentFees(row._id, tuitionFee);
   const feeMap = new Map(fees.map((fee) => [fee.monthNumber, fee]));
 
   return {
-    id: row.id,
+    id: row._id,
     name: row.name,
     className: row.class_name,
     batchYear: row.batch_year,
@@ -106,19 +95,10 @@ app.post("/api/login", asyncHandler(async (req, res) => {
     username === adminSettings.username &&
     hashPassword(password) === adminSettings.passwordHash
   ) {
-    return res.json({
-      success: true,
-      user: {
-        username: adminSettings.username,
-        name: "Administrator"
-      }
-    });
+    return res.json({ success: true, user: { username: adminSettings.username, name: "Administrator" } });
   }
 
-  return res.status(401).json({
-    success: false,
-    message: "Invalid username or password"
-  });
+  return res.status(401).json({ success: false, message: "Invalid username or password" });
 }));
 
 app.post("/api/admin/access", asyncHandler(async (req, res) => {
@@ -133,16 +113,11 @@ app.post("/api/admin/access", asyncHandler(async (req, res) => {
     return res.status(401).json({ message: "Invalid admin username or password" });
   }
 
-  return res.json({
-    success: true,
-    currentYear: CURRENT_YEAR,
-    currentYearFee: adminSettings.currentYearFee || ""
-  });
+  return res.json({ success: true, currentYear: CURRENT_YEAR, currentYearFee: adminSettings.currentYearFee || "" });
 }));
 
 app.get("/api/admin/settings", asyncHandler(async (_req, res) => {
   const adminSettings = await getAdminSettings();
-
   return res.json({
     currentYear: CURRENT_YEAR,
     currentYearFee: adminSettings ? adminSettings.currentYearFee || "" : ""
@@ -150,15 +125,7 @@ app.get("/api/admin/settings", asyncHandler(async (_req, res) => {
 }));
 
 app.put("/api/admin/settings", asyncHandler(async (req, res) => {
-  const {
-    currentUsername,
-    currentPassword,
-    nextUsername,
-    nextPassword,
-    confirmPassword,
-    currentYearFee
-  } = req.body;
-
+  const { currentUsername, currentPassword, nextUsername, nextPassword, confirmPassword, currentYearFee } = req.body;
   const adminSettings = await getAdminSettings();
 
   if (
@@ -180,46 +147,28 @@ app.put("/api/admin/settings", asyncHandler(async (req, res) => {
 
   if (wantsCredentialChange) {
     if (!nextUsername || !nextPassword || !confirmPassword) {
-      return res
-        .status(400)
-        .json({ message: "To change login, fill new username, new password, and confirm password" });
+      return res.status(400).json({ message: "To change login, fill new username, new password, and confirm password" });
     }
-
     if (nextPassword !== confirmPassword) {
       return res.status(400).json({ message: "New password and confirm password must match" });
     }
   }
 
-  const updatedUsername = wantsCredentialChange
-    ? String(nextUsername).trim()
-    : adminSettings.username;
-  const updatedPasswordHash = wantsCredentialChange
-    ? hashPassword(nextPassword)
-    : adminSettings.passwordHash;
+  const updatedUsername = wantsCredentialChange ? String(nextUsername).trim() : adminSettings.username;
+  const updatedPasswordHash = wantsCredentialChange ? hashPassword(nextPassword) : adminSettings.passwordHash;
 
-  await db.query(
-    `UPDATE admin_settings
-     SET username = $1, password_hash = $2, current_year_fee = $3
-     WHERE id = 1`,
-    [updatedUsername, updatedPasswordHash, String(currentYearFee).trim()]
-  );
-
-  return res.json({
-    success: true,
-    currentYear: CURRENT_YEAR,
-    currentYearFee: String(currentYearFee).trim()
+  await AdminSettings.findByIdAndUpdate(1, {
+    username: updatedUsername,
+    password_hash: updatedPasswordHash,
+    current_year_fee: String(currentYearFee).trim()
   });
+
+  return res.json({ success: true, currentYear: CURRENT_YEAR, currentYearFee: String(currentYearFee).trim() });
 }));
 
 app.get("/api/options", asyncHandler(async (_req, res) => {
-  const batchYears = await db
-    .query('SELECT DISTINCT batch_year AS value FROM students ORDER BY batch_year DESC')
-    .then((result) => result.rows.map((item) => item.value));
-
-  const classes = await db
-    .query('SELECT DISTINCT class_name AS value FROM students ORDER BY class_name ASC')
-    .then((result) => result.rows.map((item) => item.value));
-
+  const batchYears = await Student.distinct("batch_year").then((r) => r.sort((a, b) => b.localeCompare(a)));
+  const classes = await Student.distinct("class_name").then((r) => r.sort());
   res.json({ batchYears, classes });
 }));
 
@@ -228,55 +177,27 @@ app.get("/api/students", asyncHandler(async (req, res) => {
   const normalizedSearch = String(search || "").trim();
   const selectedMonth = Number.parseInt(monthNumber, 10);
 
-  const conditions = [];
-  const params = [];
+  const filter = {};
+  if (batchYear) filter.batch_year = batchYear;
+  if (className) filter.class_name = className;
+  if (normalizedSearch) filter.name = { $regex: normalizedSearch, $options: "i" };
 
-  if (batchYear) {
-    params.push(batchYear);
-    conditions.push(`batch_year = $${params.length}`);
-  }
-
-  if (className) {
-    params.push(className);
-    conditions.push(`class_name = $${params.length}`);
-  }
-
-  if (normalizedSearch) {
-    params.push(`%${normalizedSearch}%`);
-    conditions.push(`LOWER(name) LIKE LOWER($${params.length})`);
-  }
-
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-
-  const rows = await db
-    .query(
-      `SELECT id, name, class_name, batch_year, join_date, created_at, phone_number
-       FROM students
-       ${where}
-       ORDER BY name ASC`,
-      params
-    )
-    .then((result) => result.rows);
-
+  const rows = await Student.find(filter).sort({ name: 1 }).lean();
   let students = await Promise.all(rows.map(hydrateStudent));
 
   if (status === "completed") {
     if (Number.isInteger(selectedMonth) && selectedMonth >= 1 && selectedMonth <= 12) {
-      students = students.filter((student) =>
-        student.fees.some((fee) => fee.monthNumber === selectedMonth && fee.remainingAmount === 0)
-      );
+      students = students.filter((s) => s.fees.some((f) => f.monthNumber === selectedMonth && f.remainingAmount === 0));
     } else {
-      students = students.filter((student) => student.fees.every((fee) => fee.remainingAmount === 0));
+      students = students.filter((s) => s.fees.every((f) => f.remainingAmount === 0));
     }
   }
 
   if (status === "pending") {
     if (Number.isInteger(selectedMonth) && selectedMonth >= 1 && selectedMonth <= 12) {
-      students = students.filter((student) =>
-        student.fees.some((fee) => fee.monthNumber === selectedMonth && fee.remainingAmount > 0)
-      );
+      students = students.filter((s) => s.fees.some((f) => f.monthNumber === selectedMonth && f.remainingAmount > 0));
     } else {
-      students = students.filter((student) => student.fees.some((fee) => fee.remainingAmount > 0));
+      students = students.filter((s) => s.fees.some((f) => f.remainingAmount > 0));
     }
   }
 
@@ -284,22 +205,10 @@ app.get("/api/students", asyncHandler(async (req, res) => {
 }));
 
 app.get("/api/students/:id", asyncHandler(async (req, res) => {
-  const row = await db
-    .query(
-      `SELECT id, name, class_name, batch_year, join_date, created_at
-              , phone_number
-       FROM students
-       WHERE id = $1`,
-      [req.params.id]
-    )
-    .then((result) => result.rows[0] || null);
-
+  const row = await Student.findById(Number(req.params.id)).lean();
   const student = await hydrateStudent(row);
 
-  if (!student) {
-    return res.status(404).json({ message: "Student not found" });
-  }
-
+  if (!student) return res.status(404).json({ message: "Student not found" });
   return res.json(student);
 }));
 
@@ -307,37 +216,31 @@ app.post("/api/students", asyncHandler(async (req, res) => {
   const { name, className, batchYear, phoneNumber, joinDate } = req.body;
 
   if (!name || !className || !batchYear || !phoneNumber || !joinDate) {
-    return res
-      .status(400)
-      .json({ message: "Name, class, batch year, phone number, and join date are required" });
+    return res.status(400).json({ message: "Name, class, batch year, phone number, and join date are required" });
   }
 
-  const student = await db.withTransaction(async (client) => {
-    const insertResult = await client.query(
-      `INSERT INTO students (name, class_name, batch_year, phone_number, join_date)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, name, class_name, batch_year, phone_number, join_date, created_at`,
-      [
-        name.trim(),
-        className.trim(),
-        String(batchYear).trim(),
-        String(phoneNumber).trim(),
-        joinDate
-      ]
-    );
+  const id = await getNextId("students");
 
-    for (const monthNumber of MONTHS) {
-      await client.query(
-        `INSERT INTO fee_records (student_id, month_number, paid, paid_amount, paid_date)
-         VALUES ($1, $2, FALSE, 0, NULL)
-         ON CONFLICT (student_id, month_number) DO NOTHING`,
-        [insertResult.rows[0].id, monthNumber]
-      );
-    }
-
-    return hydrateStudent(insertResult.rows[0]);
+  const newStudent = await Student.create({
+    _id: id,
+    name: name.trim(),
+    class_name: className.trim(),
+    batch_year: String(batchYear).trim(),
+    phone_number: String(phoneNumber).trim(),
+    join_date: joinDate
   });
 
+  await Promise.all(
+    MONTHS.map((monthNumber) =>
+      FeeRecord.findOneAndUpdate(
+        { student_id: id, month_number: monthNumber },
+        { $setOnInsert: { student_id: id, month_number: monthNumber, paid: false, paid_amount: 0, paid_date: null } },
+        { upsert: true, new: true }
+      )
+    )
+  );
+
+  const student = await hydrateStudent(newStudent.toObject());
   return res.status(201).json(student);
 }));
 
@@ -345,50 +248,33 @@ app.put("/api/students/:id", asyncHandler(async (req, res) => {
   const { name, className, batchYear, phoneNumber, joinDate } = req.body;
 
   if (!name || !className || !batchYear || !phoneNumber || !joinDate) {
-    return res
-      .status(400)
-      .json({ message: "Name, class, batch year, phone number, and join date are required" });
+    return res.status(400).json({ message: "Name, class, batch year, phone number, and join date are required" });
   }
 
-  const result = await db
-    .query(
-      `UPDATE students
-       SET name = $1, class_name = $2, batch_year = $3, phone_number = $4, join_date = $5
-       WHERE id = $6
-       RETURNING id, name, class_name, batch_year, phone_number, join_date, created_at`,
-      [
-        name.trim(),
-        className.trim(),
-        String(batchYear).trim(),
-        String(phoneNumber).trim(),
-        joinDate,
-        req.params.id
-      ]
-    )
-    .then((queryResult) => queryResult.rows[0] || null);
+  const result = await Student.findByIdAndUpdate(
+    Number(req.params.id),
+    {
+      name: name.trim(),
+      class_name: className.trim(),
+      batch_year: String(batchYear).trim(),
+      phone_number: String(phoneNumber).trim(),
+      join_date: joinDate
+    },
+    { new: true }
+  ).lean();
 
-  if (!result) {
-    return res.status(404).json({ message: "Student not found" });
-  }
+  if (!result) return res.status(404).json({ message: "Student not found" });
 
   const student = await hydrateStudent(result);
-
   return res.json(student);
 }));
 
 app.delete("/api/students/:id", asyncHandler(async (req, res) => {
-  const result = await db
-    .query(
-      `DELETE FROM students
-       WHERE id = $1`,
-      [req.params.id]
-    )
-    .then((queryResult) => queryResult.rowCount);
+  const result = await Student.findByIdAndDelete(Number(req.params.id));
 
-  if (result === 0) {
-    return res.status(404).json({ message: "Student not found" });
-  }
+  if (!result) return res.status(404).json({ message: "Student not found" });
 
+  await FeeRecord.deleteMany({ student_id: Number(req.params.id) });
   return res.json({ success: true });
 }));
 
@@ -399,48 +285,29 @@ app.put("/api/students/:id/fees", asyncHandler(async (req, res) => {
     return res.status(400).json({ message: "All 12 month fee records are required" });
   }
 
-  const studentRow = await db
-    .query(
-      `SELECT id, name, class_name, batch_year, phone_number, join_date, created_at
-       FROM students
-       WHERE id = $1`,
-      [req.params.id]
-    )
-    .then((result) => result.rows[0] || null);
-
-  if (!studentRow) {
-    return res.status(404).json({ message: "Student not found" });
-  }
+  const studentRow = await Student.findById(Number(req.params.id)).lean();
+  if (!studentRow) return res.status(404).json({ message: "Student not found" });
 
   const adminSettings = await getAdminSettings();
   const tuitionFee = parseAmount(adminSettings?.currentYearFee);
 
-  await db.withTransaction(async (client) => {
-    for (const fee of fees) {
+  await Promise.all(
+    fees.map((fee) => {
       const paidAmount = Math.min(parseAmount(fee.paidAmount), tuitionFee);
       const remainingAmount = Number(Math.max(tuitionFee - paidAmount, 0).toFixed(2));
-
-      await client.query(
-        `INSERT INTO fee_records (student_id, month_number, paid, paid_amount, paid_date)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT(student_id, month_number)
-         DO UPDATE SET
-           paid = EXCLUDED.paid,
-           paid_amount = EXCLUDED.paid_amount,
-           paid_date = EXCLUDED.paid_date`,
-        [
-          req.params.id,
-          fee.monthNumber,
-          remainingAmount === 0,
-          paidAmount,
-          paidAmount > 0 ? fee.paidDate || null : null
-        ]
+      return FeeRecord.findOneAndUpdate(
+        { student_id: Number(req.params.id), month_number: fee.monthNumber },
+        {
+          paid: remainingAmount === 0,
+          paid_amount: paidAmount,
+          paid_date: paidAmount > 0 ? fee.paidDate || null : null
+        },
+        { upsert: true }
       );
-    }
-  });
+    })
+  );
 
   const student = await hydrateStudent(studentRow);
-
   return res.json(student);
 }));
 
@@ -455,7 +322,7 @@ app.use((error, _req, res, _next) => {
   res.status(500).json({ message: "Internal server error" });
 });
 
-db.initDb()
+initDb()
   .then(() => {
     app.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`);
