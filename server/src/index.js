@@ -233,9 +233,9 @@ app.get("/api/students", asyncHandler(async (req, res) => {
       `SELECT id, name, class_name, batch_year, join_date, created_at
               , phone_number
        FROM students
-       WHERE ($1 = '' OR batch_year = $1)
-         AND ($2 = '' OR class_name = $2)
-         AND ($3 = '' OR LOWER(name) LIKE LOWER($4))
+       WHERE ($1::text = '' OR batch_year = $1)
+         AND ($2::text = '' OR class_name = $2)
+         AND ($3::text = '' OR LOWER(name) LIKE LOWER($4))
        ORDER BY name ASC`,
       [
         batchYear || "",
