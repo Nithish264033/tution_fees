@@ -2,6 +2,8 @@ require("dotenv").config();
 
 const { Pool } = require("pg");
 const crypto = require("crypto");
+const dns = require("dns");
+dns.setDefaultResultOrder("ipv4first");
 
 function readEnv(name) {
   const value = process.env[name];
@@ -18,16 +20,14 @@ const pool = connectionString
       ssl:
         pgSslMode === "disable"
           ? false
-          : { rejectUnauthorized: false },
-      family: 4
+          : { rejectUnauthorized: false }
     })
   : new Pool({
       host: readEnv("PGHOST") || "localhost",
       port: Number(readEnv("PGPORT") || 5432),
       database: readEnv("PGDATABASE") || "tuition_fees",
       user: readEnv("PGUSER") || "postgres",
-      password: pgPassword,
-      family: 4
+      password: pgPassword
     });
 
 async function query(text, params = []) {
