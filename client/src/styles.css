@@ -463,7 +463,7 @@ button:disabled {
 
   .panel-side {
     position: static;
-    order: -1;
+    order: 1;
   }
 }
 

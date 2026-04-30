@@ -232,13 +232,8 @@ export default function App() {
       });
 
       setStudentForm(initialStudent);
-      setActiveTab("fees");
-      setFilter(initialFilter);
       setMessage("Student registered successfully.");
       await loadOptions();
-      await loadStudents("fees", initialFilter);
-      setSelectedStudent(createdStudent);
-      setDetailMode("view");
     } catch (error) {
       setMessage(error.message);
     } finally {
