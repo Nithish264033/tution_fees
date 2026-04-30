@@ -2,8 +2,6 @@ require("dotenv").config();
 
 const { Pool } = require("pg");
 const crypto = require("crypto");
-const dns = require("dns");
-dns.setDefaultResultOrder("ipv4first");
 
 function readEnv(name) {
   const value = process.env[name];
