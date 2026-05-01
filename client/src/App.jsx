@@ -27,6 +27,7 @@ const initialLogin = { username: "", password: "" };
 const initialStudent = { name: "", className: "", batchYear: "", phoneNumber: "", joinDate: "" };
 const initialFilter = { batchYear: "", className: "", search: "", monthNumber: "" };
 const initialAdminAccessForm = { username: "", password: "" };
+const SHEET_ID = "1RMDoFw3_Yhs2MqNojWKS3OL0SiR9BKNmjkucFSMbuxE";
 const initialAdminSettingsForm = {
   currentUsername: "",
   currentPassword: "",
@@ -122,6 +123,7 @@ export default function App() {
   const [hasAdminAccess, setHasAdminAccess] = useState(false);
   const [isAdminSaving, setIsAdminSaving] = useState(false);
   const [currentYearFeeInfo, setCurrentYearFeeInfo] = useState({ currentYear: "", currentYearFee: "" });
+  const [isImporting, setIsImporting] = useState(false);
   const [adminAccessFormKey, setAdminAccessFormKey] = useState(0);
 
   useEffect(() => {
@@ -349,6 +351,24 @@ export default function App() {
     }
   }
 
+  async function handleImportSheet() {
+    setIsImporting(true);
+    setMessage("");
+    try {
+      const data = await apiFetch("/import-sheet", {
+        method: "POST",
+        body: JSON.stringify({ sheetId: SHEET_ID })
+      });
+      setMessage(`Import done: ${data.imported} new students added, ${data.skipped} skipped.`);
+      await loadOptions();
+      await loadStudents(activeTab, filter);
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setIsImporting(false);
+    }
+  }
+
   async function handleAdminAccess(event) {
     event.preventDefault();
     setAdminAccessError("");
@@ -536,6 +556,14 @@ export default function App() {
                   }`
                 : "Current year tuition fee not loaded"}
             </div>
+            <button
+              type="button"
+              className="secondary-btn admin-access-btn"
+              onClick={handleImportSheet}
+              disabled={isImporting}
+            >
+              {isImporting ? "Importing..." : "Import from Google Sheet"}
+            </button>
             <button
               type="button"
               className="secondary-btn admin-access-btn"
@@ -951,14 +979,21 @@ export default function App() {
                   </label>
                   <label>
                     Join Date
-                    <input
-                      type="date"
-                      disabled={detailMode !== "edit"}
-                      value={selectedStudent.joinDate}
-                      onChange={(event) =>
-                        setSelectedStudent({ ...selectedStudent, joinDate: event.target.value })
-                      }
-                    />
+                    {detailMode === "edit" ? (
+                      <input
+                        type="date"
+                        value={selectedStudent.joinDate}
+                        onChange={(event) =>
+                          setSelectedStudent({ ...selectedStudent, joinDate: event.target.value })
+                        }
+                      />
+                    ) : (
+                      <input
+                        type="text"
+                        disabled
+                        value={selectedStudent.joinDate ? selectedStudent.joinDate.replace(/-/g, "/") : ""}
+                      />
+                    )}
                   </label>
                 </div>
 

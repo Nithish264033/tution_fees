@@ -18,6 +18,38 @@ function hashPassword(password) {
   return crypto.createHash("sha256").update(String(password)).digest("hex");
 }
 
+function parseSheetDate(value) {
+  if (!value) return "";
+  // Handle M/D/YYYY or MM/DD/YYYY from Google Sheets
+  const match = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (match) {
+    const [, month, day, year] = match;
+    return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+  }
+  // Already YYYY-MM-DD or unrecognized — return as-is
+  return value;
+}
+
+function parseCSVLine(line) {
+  const cols = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') { current += '"'; i++; }
+      else inQuotes = !inQuotes;
+    } else if (ch === "," && !inQuotes) {
+      cols.push(current.trim());
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  cols.push(current.trim());
+  return cols;
+}
+
 function parseAmount(value) {
   const amount = Number.parseFloat(value);
   return Number.isFinite(amount) && amount >= 0 ? Number(amount.toFixed(2)) : 0;
@@ -311,7 +343,81 @@ app.put("/api/students/:id/fees", asyncHandler(async (req, res) => {
   return res.json(student);
 }));
 
-app.use(express.static(clientDistPath));
+app.post("/api/debug-sheet", asyncHandler(async (req, res) => {
+  const { sheetId } = req.body;
+  if (!sheetId) return res.status(400).json({ message: "Sheet ID is required" });
+
+  const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv`;
+  let response;
+  try { response = await fetch(url); } catch (e) { return res.status(400).json({ message: e.message }); }
+  if (!response.ok) return res.status(400).json({ message: `HTTP ${response.status}` });
+
+  const text = await response.text();
+  const lines = text.trim().split("\n");
+  const header = lines[0];
+  const firstRow = lines[1] || "";
+  const cols = parseCSVLine(firstRow);
+  return res.json({ header, firstRowCols: cols });
+}));
+
+app.post("/api/import-sheet", asyncHandler(async (req, res) => {
+  const { sheetId } = req.body;
+  if (!sheetId) return res.status(400).json({ message: "Sheet ID is required" });
+
+  const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv`;
+  let response;
+  try {
+    response = await fetch(url);
+  } catch (fetchError) {
+    return res.status(400).json({ message: `Network error fetching sheet: ${fetchError.message}` });
+  }
+
+  if (!response.ok) return res.status(400).json({ message: `Failed to fetch Google Sheet (HTTP ${response.status}). Make sure it is shared publicly (Anyone with the link can view).` });
+
+  const text = await response.text();
+  if (!text.trim()) return res.status(400).json({ message: "Google Sheet is empty or returned no data." });
+
+  const lines = text.trim().split("\n").slice(1);
+
+  let imported = 0;
+  let skipped = 0;
+
+  for (const line of lines) {
+    const cols = parseCSVLine(line);
+    const [, studentName, className, batchYear, phoneNumber, joinDate] = cols;
+
+    if (!studentName || !phoneNumber) { skipped++; continue; }
+
+    const exists = await Student.findOne({ phone_number: phoneNumber });
+    if (exists) { skipped++; continue; }
+
+    const id = await getNextId("students");
+    await Student.create({
+      _id: id,
+      name: studentName,
+      class_name: className || "",
+      batch_year: String(batchYear || ""),
+      phone_number: phoneNumber,
+      join_date: parseSheetDate(joinDate)
+    });
+
+    await Promise.all(
+      MONTHS.map((monthNumber) =>
+        FeeRecord.findOneAndUpdate(
+          { student_id: id, month_number: monthNumber },
+          { $setOnInsert: { student_id: id, month_number: monthNumber, paid: false, paid_amount: 0, paid_date: null } },
+          { upsert: true, new: true }
+        )
+      )
+    );
+
+    imported++;
+  }
+
+  return res.json({ success: true, imported, skipped });
+}));
+
+
 
 app.get("*", (req, res) => {
   res.sendFile(path.join(clientDistPath, "index.html"));
