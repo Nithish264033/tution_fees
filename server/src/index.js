@@ -10,6 +10,7 @@ const clientDistPath = path.join(__dirname, "..", "..", "client", "dist");
 
 app.use(cors());
 app.use(express.json());
+app.use(express.static(clientDistPath));
 
 const MONTHS = Array.from({ length: 12 }, (_, index) => index + 1);
 const CURRENT_YEAR = new Date().getFullYear();
